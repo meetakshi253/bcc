@@ -1,0 +1,122 @@
+.TH smbslower 8  "2024-01-08" "USER COMMANDS"
+.SH NAME
+smbslower \- Trace slow SMB file operations, with per-event details.
+.SH SYNOPSIS
+.B smbslower [\-h] [\-j] [\-p PID] [\-c CID] [min_ms] [-d duration]
+.SH DESCRIPTION
+This tool traces all SMB operations. It measures the time spent in these operations, and prints details for each that exceeded a threshold.
+
+WARNING: See the OVERHEAD section.
+
+By default, a minimum millisecond threshold of 10 is used. If a threshold of 0
+is used, all events are printed (warning: verbose).
+
+Since this works by probing the SMB message id allocation and delete functions, it will need updating to match any changes to these functions.
+
+Since this uses BPF, only the root user can use this tool.
+.SH REQUIREMENTS
+CONFIG_BPF and bcc.
+.SH OPTIONS
+\-p PID
+Trace this PID only.
+.TP
+\-c CID
+Trace this command only. The command to command code mapping has been kept the same as the ones used in the SMB client module. Take a look at smb_commands in smbslower.py.
+.TP
+\-d DURATION
+Total duration of trace in seconds.
+.TP
+\-j
+Trace output in CSV format.
+.TP
+min_ms
+Minimum operation latency (duration) to trace, in milliseconds. Default is 10 ms.
+.SH EXAMPLES
+.TP
+Trace synchronous SMB operations that took longer than 10 ms:
+#
+.B smbslower
+.TP
+Trace slower than 1 ms:
+#
+.B smbslower 1
+.TP
+Trace slower than 1 ms, and output just the fields in parsable format (csv):
+#
+.B smbslower \-j 1
+.TP
+Trace all smb operations (warning: the output will be verbose):
+#
+.B smbslower 0
+.TP
+Trace slower than 1 ms, for PID 181 only:
+#
+.B smbslower \-p 181 1
+.TP
+Trace slower than 1 ms, for SMB2_CREATE(CID=5) only:
+#
+.B smbslower \-c 5 1
+.TP
+Trace for 10 seconds only:
+#
+.B smbslower \-d 10
+.SH FIELDS
+ENDTIME(s)
+Time of operation completion since first seen, in seconds.
+.TP
+TASK
+Process name.
+.TP
+PID
+Process ID.
+.TP
+TYPE
+SMB operation name.
+.TP
+LATENCY(ms)
+Latency (duration) of operation, measured from when it was issued by VFS to the
+filesystem, to when it completed. This time is inclusive of RPC latency,
+network latency, cache lookup, remote fileserver processing latency, etc. 
+Its a more accurate measure of the latency suffered by applications performing
+SMB operation calls to a fileserver.
+.TP
+SESSIONID
+SMB Session ID said operation belongs to.
+.TP
+COMPOUND_RQST
+If the operation is part of a compound request, this field will be 1. Note that this is determined using NextCommand field of the SMB header. In compound operations, the last operation would not be marked as compound.
+.TP
+ASYNC_RQST
+If the operation is asynchronous, this field will be 1. This is determined using SMB2_FLAGS_ASYNC_COMMAND flag in the SMB header.
+.TP
+TREEID/ASYNCID
+Tree ID or Async ID the operation has, depending on whether the request is synchronous or asynchronous respectively.
+.TP
+ENDTIME_us
+Completion timestamp, microseconds (\-j only).
+.TP
+LATENCY_us
+Latency (duration) of the operation, in microseconds (\-j only).
+.SH OVERHEAD
+This adds low-overhead instrumentation to SMB operations, including reads and writes from the file system cache. Such read, writes and particularly getattrs can be very frequent (depending on the workload; eg, 1M/sec), at which point the overhead of this tool (even if it prints no "slower" events) can
+begin to become significant. Measure and quantify before use. If this
+continues to be a problem, consider switching to a tool that prints in-kernel
+summaries only. This tool has been tested with SMB2+, for kernels 5.15 and above.
+.PP
+Note that the overhead of this tool should be less than fileslower(8), as
+this tool targets SMB functions only, and not all file read/write paths.
+.SH SOURCE
+This is from bcc.
+.IP
+https://github.com/iovisor/bcc
+.PP
+Also look in the bcc distribution for a companion smbslower_examples.txt file containing
+example usage, output, and commentary for this tool.
+.SH OS
+Linux
+.SH STABILITY
+Unstable - in development.
+.SH AUTHOR
+Meetakshi Setiya
+.SH SEE ALSO
+smbvfsslower(8), biosnoop(8), funccount(8), fileslower(8)

@@ -1,0 +1,114 @@
+.TH smbvfsslower 8  "2024-01-08" "USER COMMANDS"
+.SH NAME
+smbvfsslower \- Trace slow VFS callbacks for SMB shares, with per-event details.
+.SH SYNOPSIS
+.B smbvfsslower [\-h] [\-j] [\-p PID] [min_ms] [-d duration] [--inode] [--file] [--adspace] [--super]
+.SH DESCRIPTION
+This tool traces all VFS callbacks for SMB. It measures the time spent in  these operations, and prints details for each that exceeded a threshold.
+
+WARNING: See the OVERHEAD section.
+
+By default, a minimum millisecond threshold of 10 is used. If a threshold of 0
+is used, all events are printed (warning: verbose).
+
+Since this works by probing all individual vfs callbacks specified by the SMB client, it will need updating to match any changes to these functions.
+
+Since this uses BPF, only the root user can use this tool.
+.SH REQUIREMENTS
+CONFIG_BPF and bcc.
+.SH OPTIONS
+\-p PID
+Trace this PID only.
+.TP
+\-d DURATION
+Total duration of trace in seconds.
+.TP
+\-j
+Trace output in CSV format.
+.TP
+min_ms
+Minimum operation latency (duration) to trace, in milliseconds. Default is 10 ms.
+.TP
+\-\-inode
+Trace callbacks for inode operations only.
+.TP
+\-\-file
+Trace callbacks for file structure operations only.
+.TP
+\-\-adspace
+Trace callbacks for address space operations only.
+.TP
+\-\-super
+Trace callbacks for superblock operations only.
+.SH EXAMPLES
+Trace all SMB VFS callbacks that take longer than 10 ms:
+#
+.B smbvfsslower
+.TP
+Trace slower than 1 ms:
+#
+.B smbvfsslower 1
+.TP
+Trace slower than 1 ms, and output just the fields in parsable format (csv):
+#
+.B smbvfsslower \-j 1
+.TP
+Trace all callbacks (warning: the output will be verbose):
+#
+.B smbvfsslower 0
+.TP
+Trace slower than 1 ms, for PID 181 only:
+#
+.B smbvfsslower \-p 181 1
+.TP
+Trace for 10 seconds only:
+#
+.B smbvfsslower \-d 10
+.TP
+Trace superblock and inode callbacks only:
+#
+.B smbvfsslower \-\-super \-\-inode
+.SH FIELDS
+ENDTIME(s)
+Time of callback completion since first seen, in seconds.
+.TP
+TASK
+Process name.
+.TP
+PID
+Process ID.
+.TP
+TYPE
+Callback type (INODE/FILE/ADSPACE/SUPER).
+.TP
+FUNCTION
+Callback function name.
+.TP
+LATENCY(ms)
+Time spent in the callback, in milliseconds.
+.TP
+ENDTIME_us
+Completion timestamp, microseconds (\-j only).
+.TP
+LATENCY_us
+Latency (duration) of the callback, in microseconds (\-j only).
+.SH OVERHEAD
+This adds low-overhead instrumentation to SMB operations. If these operations are very frequent (depending on the workload; eg, 1M/sec), the overhead of this tool (even if it prints no "slower" events) can begin to become significant. Measure and quantify before use. If this continues to be a problem, consider switching to a tool that prints in-kernel summaries only. This tool has been tested with SMB2+, for kernels 6.0 and above.
+.PP
+Note that the overhead of this tool should be less than fileslower(8), as
+this tool targets SMB functions only, and not all file read/write paths.
+.SH SOURCE
+This is from bcc.
+.IP
+https://github.com/iovisor/bcc
+.PP
+Also look in the bcc distribution for a companion smbvfsslower_examples.txt file containing
+example usage, output, and commentary for this tool.
+.SH OS
+Linux
+.SH STABILITY
+Unstable - in development.
+.SH AUTHOR
+Meetakshi Setiya
+.SH SEE ALSO
+smbslower(8), biosnoop(8), funccount(8), fileslower(8)
