@@ -1,0 +1,146 @@
+Demonstrations of smbslower, the Linux eBPF/BCC version.
+
+smbslower shows all SMB operations slower than a threshold, For example:
+
+# ./smbslower.py
+Tracing SMB operations that are slower than 10 ms.
+ENDTIME  TASK           PID     TYPE                      LATENCY(ms)       SESSIONID        COMPOUND_RQST ASYNC_RQST TREE_ID/ASYNC_ID
+20:20:01 t4             34168   SMB2_CREATE               93.593           0x1b80118000065             1            0            5
+20:20:01 t4             34168   SMB2_CLOSE                93.637           0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                126.621          0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                131.024          0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                131.678          0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                144.372          0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                148.054          0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                147.741          0x1b80118000065             0            0            5
+20:20:01 cifsd          33292   SMB2_WRITE                164.471          0x1b80118000065             0            0            5
+20:20:02 cifsd          33292   SMB2_WRITE                153.405          0x1b80118000065             0            0            5
+20:20:02 cifsd          33292   SMB2_WRITE                135.650          0x1b80118000065             0            0            5
+20:20:06 t4             34168   SMB2_CREATE               18.408           0x1b80118000065             1            0            5
+20:20:06 t4             34168   SMB2_SET_INFO             18.451           0x1b80118000065             1            0            5
+20:20:06 t4             34168   SMB2_CLOSE                18.461           0x1b80118000065             0            0            5
+[...]
+
+This shows all SMB writes (for example) each from the same session 
+0x1b80118000065 had latencies greater than 10 ms. 
+
+This "latency" is measured from when the operation was issued from the VFS
+interface to the file system, to when it completed. This spans everything:
+RPC latency, network latency, file system CPU cycles, file system locks, run
+queue latency, etc. This is a better measure of the latency suffered by
+applications reading from a SMB share and can better expose problems
+experienced by SMB clients.
+
+The threshold can be provided as an argument. Eg, I/O slower than 1 ms:
+
+# ./smbslower.py 1
+Tracing SMB operations that are slower than 100 ms.
+ENDTIME  TASK           PID     TYPE                      LATENCY(ms)       SESSIONID        COMPOUND_RQST ASYNC_RQST TREE_ID/ASYNC_ID
+20:35:57 cifsd          36464   SMB2_WRITE                143.997          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                152.001          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                154.458          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                169.024          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                165.800          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                176.944          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                171.879          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                170.461          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                176.871          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                164.204          0x1b80118000065             0            0            5
+20:35:57 cifsd          36464   SMB2_WRITE                162.437          0x1b80118000065             0            0            5
+20:35:58 cifsd          36464   SMB2_WRITE                168.888          0x1b80118000065             0            0            5
+20:35:58 cifsd          36464   SMB2_WRITE                211.433          0x1b80118000065             0            0            5
+[...]
+
+I had a lot of dirty pages to be written to the server. This shows all SMB_WRITEs
+that took more than 100ms. Depending on your latency to your fileserver, you might 
+need to tweak this value.
+
+A threshold of 0 will trace all operations. Warning: the output will be
+verbose, as it will include all file system cache hits.
+
+# ./smbslower.py 0 -d 10
+Tracing SMB operations.
+ENDTIME  TASK           PID     TYPE                      LATENCY(ms)       SESSIONID        COMPOUND_RQST ASYNC_RQST TREE_ID/ASYNC_ID
+20:41:01 mkdir          37416   SMB2_CREATE               0.962            0x1b80118000065             1            0            5
+20:41:01 mkdir          37416   SMB2_QUERY_INFO           0.995            0x1b80118000065             1            0            5
+20:41:01 mkdir          37416   SMB2_CLOSE                1.004            0x1b80118000065             0            0            5
+20:41:01 mkdir          37416   SMB2_CREATE               1.201            0x1b80118000065             1            0            5
+20:41:01 mkdir          37416   SMB2_CLOSE                1.235            0x1b80118000065             0            0            5
+20:41:01 kworker/0:0    30518   SMB2_CLOSE                0.585            0x1b80118000065             0            0            5
+20:41:01 mkdir          37416   SMB2_CREATE               0.853            0x1b80118000065             1            0            5
+20:41:01 mkdir          37416   SMB2_QUERY_INFO           0.887            0x1b80118000065             1            0            5
+20:41:01 mkdir          37416   SMB2_CLOSE                0.898            0x1b80118000065             0            0            5
+20:41:04 bash           14773   SMB2_CREATE               1.043            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_QUERY_INFO           1.090            0x1b80118000065             0            0            5
+20:41:04 bash           14773   SMB2_CREATE               0.946            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_QUERY_INFO           0.988            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_CLOSE                1.006            0x1b80118000065             0            0            5
+20:41:04 bash           14773   SMB2_CREATE               1.072            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_QUERY_INFO           1.105            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_CLOSE                1.126            0x1b80118000065             0            0            5
+20:41:04 bash           14773   SMB2_CREATE               0.720            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_QUERY_INFO           0.753            0x1b80118000065             1            0            5
+20:41:04 bash           14773   SMB2_CLOSE                0.818            0x1b80118000065             0            0            5
+20:41:06 touch          37448   SMB2_CREATE               1.605            0x1b80118000065             0            0            5
+20:41:06 touch          37448   SMB2_FLUSH                1.850            0x1b80118000065             0            0            5
+20:41:06 touch          37448   SMB2_SET_INFO             0.647            0x1b80118000065             0            0            5
+20:41:07 kworker/4:0    37204   SMB2_CLOSE                1.056            0x1b80118000065             0            0            5
+
+While tracing, the following commands were run in another window
+
+# mkdir dd
+# cd dd
+# touch f
+
+The output now includes create, query info, close, flush, set info and close operations.
+The -d 10 option traces for 10 seconds only.
+
+One can also specify a particular command to be traced.
+
+# ./smbslower.py 20 -c 5 -d 10
+Tracing SMB operations that are slower than 20 ms.
+Tracing SMB operations for command 5.
+ENDTIME  TASK           PID     TYPE                      LATENCY(ms)       SESSIONID        COMPOUND_RQST ASYNC_RQST TREE_ID/ASYNC_ID
+00:21:23 mv             54276   SMB2_CREATE               44.804           0x1b80118000065             1            0            5
+00:21:23 unlink         54277   SMB2_CREATE               42.524           0x1b80118000065             1            0            5
+00:21:23 rm             54278   SMB2_CREATE               44.062           0x1b80118000065             1            0            5
+
+
+A -j option will print just the fields (parsable output, csv):
+ENDTIME_us,TASK,PID,TYPE,LATENCY_us,SESSIONID,COMPOUND_RQST,ASYNC_RQST,TREEID/ASYNCID,
+151949008678,bash,39014,SMB2_CREATE,1431,0x1b80118000065,0,0,5
+151949010504,bash,39014,SMB2_FLUSH,1696,0x1b80118000065,0,0,5
+151950057978,kworker/5:1,32871,SMB2_CLOSE,13833,0x1b80118000065,0,0,5
+151957812557,mv,39095,SMB2_CREATE,1680,0x1b80118000065,1,0,5
+151957812606,mv,39095,SMB2_SET_INFO,1715,0x1b80118000065,1,0,5
+151957812622,mv,39095,SMB2_CLOSE,1721,0x1b80118000065,0,0,5
+
+This may be useful for visualizing with another tool, for example, for
+producing a scatter plot of ENDTIME vs LATENCY, to look for time-based
+patterns.
+
+USAGE message:
+
+# ./smbslower.py -h
+usage: smbslower.py [-h] [-p PID] [-c CID] [-d DURATION] [-j] [min_ms]
+
+Trace all SMB operations slower than a threshold, supports SMB2+.
+
+positional arguments:
+  min_ms                Minimum IO duration to trace in ms (default=10ms)
+
+options:
+  -h, --help            show this help message and exit
+  -p PID, --pid PID     Trace this pid only
+  -c CID, --cid CID     Trace this command only
+  -d DURATION, --duration DURATION
+                        total duration of trace in seconds
+  -j, --csv             just print fields: comma-separated values
+
+    ./smbslower                 # trace smb operations slower than 10ms
+    ./smbslower 1               # trace smb operations slower than 1ms
+    ./smbslower -j 1            # ... 1 ms, parsable output (csv)
+    ./smbslower 0               # trace all smb operations
+    ./smbslower -p 684          # trace pid 684 only
+    ./smbslower -c 5            # trace smb operation 5 (0x0005 SMB2_CREATE) only
+    ./smbslower -d 10           #trace for 10 seconds only

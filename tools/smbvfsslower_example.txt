@@ -1,0 +1,124 @@
+Demonstrations of smbvfsslower, the Linux eBPF/BCC version.
+
+smbvfsslower shows all operations at the VFS layer for SMB2+ that are
+slower than a threshold, For example:
+
+# ./smbvfsslower.py 1
+Tracing SMB operations that are slower than 1 ms.
+ENDTIME    TASK                 PID     FUNCTION                  LATENCY(ms)
+23:26:33   t4                   44027   INODE_OP_RENAME2          1.689  
+23:26:33   node                 13276   INODE_OP_GETATTR          1.041  
+23:26:38   t4                   44027   INODE_OP_RENAME2          1.655  
+23:26:50   touch                44224   INODE_OP_SETATTR          2.518  
+23:27:00   nano                 44278   INODE_OP_UNLINK           16.351 
+23:27:04   nano                 44278   INODE_OP_SETATTR          3.534  
+23:27:17   node                 13276   INODE_OP_GETATTR          1.042  
+[...]
+
+This traces inode, file structure, address space and super block operations
+and displayes all with latencies greater than 1 ms. Threshold is provided 
+as an argument. The default is 10 ms.   
+
+The latency is measured from when the operation reaches the VFS, to when
+it completes the callback.
+
+A threshold of 0 will trace all operations. Warning: the output will be
+verbose, as it will include all file system cache hits.
+
+# ./smbvfsslower.py 0 -d 10
+Tracing SMB operations.
+ENDTIME    TASK                 PID     FUNCTION                  LATENCY(ms)
+23:47:39   touch                48750   INODE_OP_PERMISSION       0.006  
+23:47:39   touch                48750   INODE_OP_PERMISSION       0.001  
+23:47:39   touch                48750   SUPER_OP_ALLOC_INODE      0.007  
+23:47:39   touch                48750   INODE_OP_PERMISSION       0.001  
+23:47:39   touch                48750   FILE_FLUSH                0.002  
+23:47:39   touch                48750   INODE_OP_PERMISSION       0.001  
+23:47:39   touch                48750   INODE_OP_SETATTR          3.265  
+23:47:39   touch                48750   FILE_FLUSH                0.001  
+23:47:39   touch                48750   FILE_CLOSE                0.003  
+23:47:42   bash                 14773   INODE_OP_PERMISSION       0.005  
+23:47:42   bash                 14773   INODE_OP_PERMISSION       0.001  
+23:47:42   bash                 14773   INODE_OP_GETATTR          1.000  
+23:47:42   bash                 14773   FILE_READDIR              0.740  
+23:47:42   bash                 14773   FILE_READDIR              0.668  
+23:47:42   bash                 14773   FILE_CLOSEDIR             0.707  
+23:47:42   rm                   48782   INODE_OP_PERMISSION       0.004  
+23:47:42   rm                   48782   INODE_OP_GETATTR          0.003  
+23:47:42   rm                   48782   INODE_OP_PERMISSION       0.001  
+23:47:42   rm                   48782   INODE_OP_PERMISSION       0.001  
+23:47:42   rm                   48782   INODE_OP_UNLINK           45.362 
+23:47:42   rm                   48782   SUPER_OP_DROP_INODE       0.003  
+23:47:42   rm                   48782   SUPER_OP_EVICT_INODE      0.003  
+23:47:42   swapper/3            0       SUPER_OP_FREE_INODE       0.003 
+23:47:48   t4                   48482   ADSPACE_OP_DIRTY_FOLIO    0.001  
+23:47:48   t4                   48482   ADSPACE_OP_WRITE_BEGIN    0.002  
+23:47:48   t4                   48482   ADSPACE_OP_DIRTY_FOLIO    0.001  
+23:47:49   t4                   48482   ADSPACE_OP_WRITE_BEGIN    0.002  
+23:47:49   t4                   48482   ADSPACE_OP_DIRTY_FOLIO    0.001
+
+While tracing, the following commands were run in another window
+
+# touch f
+# rm -rf *
+Along with a script that has a lot of dirty pages to be written to the server
+to show address space operations.
+
+The output now includes inode, file, address space and super block operations.
+The -d 10 option traces for 10 seconds only.
+
+
+A -j option will print just the fields (parsable output, csv):
+
+# ./smbvfsslower.py -j 0
+ENDTIME_us,TASK,PID,FUNCTION,LATENCY_us
+162994306,bash,14773,INODE_OP_PERMISSION,6
+162994306,bash,14773,INODE_OP_PERMISSION,1
+162994308,bash,14773,SUPER_OP_ALLOC_INODE,8
+162994308,bash,14773,INODE_OP_PERMISSION,2
+162994311,bash,14773,INODE_OP_SETATTR,3315
+162994311,bash,14773,FILE_FLUSH,3
+162994311,bash,14773,ADSPACE_OP_WRITE_BEGIN,3
+162994311,bash,14773,ADSPACE_OP_DIRTY_FOLIO,5
+162994311,bash,14773,ADSPACE_OP_WRITEPAGES,63
+162994312,bash,14773,FILE_CLOSE,4
+163006776,mv,49562,INODE_OP_PERMISSION,6
+163006776,mv,49562,INODE_OP_PERMISSION,1
+163006778,mv,49562,INODE_OP_LOOKUP,627
+163006778,mv,49562,INODE_OP_PERMISSION,1
+163006778,mv,49562,INODE_OP_PERMISSION,1
+163006779,mv,49562,INODE_OP_RENAME2,1362
+
+This may be useful for visualizing with another tool, for example, for
+producing a scatter plot of ENDTIME vs LATENCY, to look for time-based
+patterns.
+
+USAGE message:
+
+# ./smbvfsslower.py -h
+usage: smbvfsslower.py [-h] [-p PID] [-d DURATION] [-j] [--inode] [--file] [--adspace] [--super] [min_ms]
+
+Trace all SMB operations slower than a threshold, supports SMB2+.
+Traces network call latency by default. Use --vfs to trace latency during vfs callbacks.
+
+positional arguments:
+  min_ms                Minimum IO duration to trace in ms (default=10ms)
+
+options:
+  -h, --help            show this help message and exit
+  -p PID, --pid PID     Trace this pid only
+  -d DURATION, --duration DURATION
+                        total duration of trace in seconds
+  -j, --csv             just print fields: comma-separated values
+  --inode               trace inode operations only
+  --file                trace file operations only
+  --adspace             trace address space operations only
+  --super               trace superblock operations only
+
+    ./smbvfsslower                      # trace smb operations slower than 10ms
+    ./smbvfsslower 1                    # trace smb operations slower than 1ms
+    ./smbvfsslower -j 1                 # ... 1 ms, parsable output (csv)
+    ./smbvfsslower 0                    # trace all smb operations
+    ./smbvfsslower -p 684               # trace pid 684 only
+    ./smbvfsslower -d 10                # trace for 10 seconds only
+    ./smbvfsslower --inode --super      # trace inode and super block operations only
