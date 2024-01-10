@@ -103,6 +103,8 @@ bpf_text = """
 #include <linux/types.h>
 #include <linux/kref.h>
 
+// mid_q_entry and smb2_hdr are struct definitions copied from the cifs 
+// client. verified to work with kernels 5.15+
 struct mid_q_entry {
 	struct list_head qhead;
 	struct kref refcount;
@@ -182,12 +184,12 @@ struct data_t {
     char is_async;
 };
 
-static int system_endianness() {
+static inline int system_endianness() {
     int n = 1;
     return (*(char *)&n == 1) ? 0 : 1; //0 for little endian, 1 for big endian
 }
 
-static u16 le_to_sys16(u16 x) {
+static inline u16 le_to_sys16(u16 x) {
 	//check system's endianness
     if(system_endianness() == 0) {
 		return x;
@@ -197,7 +199,7 @@ static u16 le_to_sys16(u16 x) {
            ((x<<8)&0xff00); // Move byte 0 to byte 1
 }
 
-static u32 le_to_sys32(u32 x) {
+static inline u32 le_to_sys32(u32 x) {
     if(system_endianness() == 0) {
         return x;
     }
@@ -208,7 +210,7 @@ static u32 le_to_sys32(u32 x) {
            ((x<<24)&0xff000000);
 }
 
-static u64 le_to_sys64(u64 x) {
+static inline u64 le_to_sys64(u64 x) {
     if(system_endianness() == 0) {
         return x;
     }
@@ -223,17 +225,17 @@ static u64 le_to_sys64(u64 x) {
            ((x<<56)&0xff00000000000000);
 }
 
-static u32 sys_to_le32(u32 x) {
+static inline u32 sys_to_le32(u32 x) {
     return le_to_sys32(x);
 }
 
 # define SMB2_FLAGS_ASYNC_COMMAND sys_to_le32(0x00000002)
 
-BPF_HASH(shdrinfo, u64, struct headerinfo_t);
-BPF_HASH(entryinfo, struct mid_q_entry *, struct val_t);
+BPF_HASH(shdrinfo, u64, struct headerinfo_t);   //pid:headerinfo
+BPF_HASH(entryinfo, struct mid_q_entry *, struct val_t);    //&mid_q_entry:val_t
 BPF_PERF_OUTPUT(events);
 
-//kprobe into smb2_mid_entry_alloc and get the session details
+// kprobe into smb2_mid_entry_alloc and get the session details
 int trace_smb_mid_alloc_entry(struct pt_regs *ctx, struct smb2_hdr *shdr) {
     u64 id = bpf_get_current_pid_tgid();
     u32 pid = id >> 32;
@@ -295,7 +297,7 @@ int trace_smb_mid_alloc_exit(struct pt_regs *ctx) {
 	return 0;
 }
 
-static int trace_release_mid(struct pt_regs *ctx, struct mid_q_entry *mid_struct) {
+static inline int trace_release_mid(struct pt_regs *ctx, struct mid_q_entry *mid_struct) {
     struct val_t *valp;
     valp = entryinfo.lookup(&mid_struct);
 

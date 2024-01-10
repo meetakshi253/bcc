@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 # @lint-avoid-python-3-compatibility-imports
 #
-# smbslower     Trace slow SMB operations
-#               for Linux using BCC & eBPF
+# smbvfsslower      Trace slow VFS callbacks for SMB
+#                   operations for Linux using BCC & eBPF
 #
-# This is a generic script to trace all possible SMB operations. By default a minimum
-# threshold of 10ms is used.
+# Usage: smbvfsslower.py [-h] [-j] [-p PID] [-d DURATION] [--inode] [--file]
+# [--adspace] [--super] [min_us]
 #
-# Usage: smbslower [-h] [-j] [-p PID] [min_us] [-d DURATION] [--inode] [--file] # [--adspace] [--super]
+# This script traces all VFS callbacks for SMB. It measures the time spent in 
+# these operations, and prints details for each that exceeded a threshold.
+#
+# WARNING: This adds low-overhead instrumentation to the smb operations.
+# If these operations are very frequent (depending on the workload; eg, 1M/sec),
+# the overhead of this tool (even if it prints no "slower" events) could be 
+# significant.
+#
+# Some of this code is copied from similar tools (ext4slower, nfsslower
+# etc)
+#
+# This is a generic script to trace all possible SMB VFS callbacks. By default # a minimum threshold of 10ms is used.
+# 
+# 08-Jan-2024   Meetakshi Setiya  Created this.
 
 from __future__ import print_function
 from time import strftime
@@ -26,10 +39,8 @@ examples = """
 """
 
 argparser = argparse.ArgumentParser(
-    description="""Trace all SMB operations slower than a threshold, \
-supports SMB2+.
-Traces network call latency by default. Use --vfs to trace latency \
-during vfs callbacks.
+    description="""Trace latency during VFS callbacks for SMB operations. \
+Supports SMB2+.
 """,
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog=examples)
@@ -50,7 +61,6 @@ argparser.add_argument("--adspace", action="store_true",
 argparser.add_argument("--super", action="store_true",
                        help="trace superblock operations only")
 argparser.add_argument("--ebpf", action="store_true", help=argparse.SUPPRESS)
-
 args = argparser.parse_args()
 min_ms = int(args.min_ms)
 pid = args.pid
@@ -63,6 +73,7 @@ debug = 0
 if args.duration:
     args.duration = timedelta(seconds=int(args.duration))
 
+# smb2 callbacks for file structure operations and helper functions to be executed on respective retprobes
 file_operations = """
 	#define cifs_loose_read_iter F0,
 	#define cifs_file_write_iter F1,
@@ -214,6 +225,7 @@ int trace_file_dir_fsync_exit(struct pt_regs *ctx) {
 }
 """
 
+# smb2 callbacks for inode operations and helper functions to be executed on respective retprobes
 inode_operations = """
 #define cifs_create I0
 #define cifs_atomic_open I1 
@@ -307,6 +319,7 @@ int trace_inode_get_link_exit(struct pt_regs *ctx) {
 }
 """
 
+# smb2 callbacks for address space operations and helper functions to be executed on respective retprobes
 address_space_operations = """
 #define cifs_read_folio A0
 #define cifs_readahead A1
@@ -375,6 +388,7 @@ int trace_adspace_swap_deactivate_exit(struct pt_regs *ctx) {
 }
 """
 
+# smb2 callbacks for super block operations and helper functions to be executed on respective retprobes
 super_block_operations = """
 #define cifs_statfs S0
 #define cifs_alloc_inode S1 
@@ -428,6 +442,7 @@ int trace_super_freeze_exit(struct pt_regs *ctx) {
 }
 """
 
+# define BPF program
 bpf_text = """
 #include <uapi/linux/ptrace.h>
 #include <linux/fs.h>
@@ -441,7 +456,7 @@ bpf_text = """
 #define MAX_OP_TYPE_LENGTH 10
 #define MAX_FUNCTION_LENGTH 30
 
-BPF_HASH(entryinfo); //store pid->timestamp
+BPF_HASH(entryinfo);    //pid:timestamp
 BPF_PERF_OUTPUT(events);
 
 struct data_t {
@@ -453,7 +468,7 @@ struct data_t {
     char task[TASK_COMM_LEN];
 };
 
-static void copy_string(char destination[], const char source[]) {
+static inline void copy_string(char destination[], const char source[]) {
     int i = 0;
     while(source[i]) {
         destination[i] = source[i];
@@ -461,7 +476,8 @@ static void copy_string(char destination[], const char source[]) {
     }
     destination[i] = 0;
 }
- 
+
+// common function to be executed on kprobe into all vfs callbacks
 int trace_all_vfs_entry(struct pt_regs *ctx) {
     u64 id = bpf_get_current_pid_tgid();
     u32 pid = id >> 32; // PID is higher part
@@ -476,13 +492,15 @@ int trace_all_vfs_entry(struct pt_regs *ctx) {
     return 0;    
 }
 
-static int trace_all_vfs_exit(struct pt_regs *ctx, const char type[], const char fn_name[]) {
+// helper that gets called by functions to be executed on retprobe into all vfs
+// callbacks
+static inline int trace_all_vfs_exit(struct pt_regs *ctx, const char type[], const char fn_name[]) {
     struct val_t *valp;
     u64 id = bpf_get_current_pid_tgid();
 
     u64 *when_start = entryinfo.lookup(&id);
     if (when_start == 0) {
-        //misssed tracing issue or filtered
+        //missed tracing issue or filtered
         return 0;
     }
 
@@ -500,7 +518,7 @@ static int trace_all_vfs_exit(struct pt_regs *ctx, const char type[], const char
     copy_string(data.function, fn_name);
     data.pid = id >> 32;
     data.latency_us = delta;
-    data.when_release = when_end / NSEC_PER_MSEC;
+    data.when_release = when_end / NSEC_PER_USEC;
     bpf_get_current_comm(&data.task, sizeof(data.task));
 
     events.perf_submit(ctx, &data, sizeof(data));
@@ -509,7 +527,7 @@ static int trace_all_vfs_exit(struct pt_regs *ctx, const char type[], const char
 }
 """
 
-
+# attach kprobes to file structure callbacks
 def AttachProbesSMBVFSFileOperations(b: BPF) -> BPF:
     b.attach_kprobe(event="cifs_loose_read_iter", fn_name="trace_all_vfs_entry")
     b.attach_kretprobe(event="cifs_loose_read_iter", fn_name="trace_file_loose_read_iter_exit")
@@ -600,7 +618,7 @@ def AttachProbesSMBVFSFileOperations(b: BPF) -> BPF:
 
     return b
 
-
+# attach kprobes to inode callbacks
 def AttachProbesSMBVFSInodeOperations(b: BPF) -> BPF:
     b.attach_kprobe(event="cifs_create", fn_name="trace_all_vfs_entry")
     b.attach_kretprobe(event="cifs_create", fn_name="trace_inode_create_exit")
@@ -658,7 +676,7 @@ def AttachProbesSMBVFSInodeOperations(b: BPF) -> BPF:
     
     return b
 
-
+# attach kprobes to address space callbacks
 def AttachProbesSMBVFSAddressSpaceOperations(b: BPF) -> BPF:
     b.attach_kprobe(event="cifs_read_folio", fn_name="trace_all_vfs_entry")
     b.attach_kretprobe(event="cifs_read_folio",
@@ -716,7 +734,7 @@ def AttachProbesSMBVFSAddressSpaceOperations(b: BPF) -> BPF:
 
     return b
 
-
+# attach kprobes to super block callbacks
 def AttachProbesSMBVFSSuperBlockOperations(b: BPF) -> BPF:
     b.attach_kprobe(event="cifs_statfs", fn_name="trace_all_vfs_entry")
     b.attach_kretprobe(event="cifs_statfs", fn_name="trace_super_statfs_exit")
@@ -757,7 +775,6 @@ def AttachProbesSMBVFSSuperBlockOperations(b: BPF) -> BPF:
     b.attach_kretprobe(event="cifs_freeze", fn_name="trace_super_freeze_exit")
 
     return b
-
 
 # selectively attach probes if mode selected
 def AttachProbesSMBVFSCallbacks() -> BPF:
@@ -821,13 +838,19 @@ def PrintSlowerOutput(b: BPF):
         op_type = event.type.decode('utf-8')
         fn_name = event.function.decode('utf-8')
         if csv:
-            print("%d,%s,%d,%s,%s,%d"
-                  % (event.when_release, event.task.decode('utf-8', 'replace'), event.pid,
-                     op_type, fn_name, event.latency_us))
-            return
-        print("%-10s %-20s %-7d %-10s %-25s %-7.3f"
-              % (strftime("%H:%M:%S"), event.task.decode('utf-8', 'replace'), event.pid,
-                 op_type, fn_name, float(event.latency_us)/1000))
+            print("%d,%s,%d,%s,%s,%d" % (event.when_release,
+                                        event.task.decode('utf-8', 'replace'), event.pid,
+                                        op_type,
+                                        fn_name,
+                                        event.latency_us))
+        else:
+            print("%-10s %-20s %-7d %-10s %-25s %-7.3f" % (
+                                        strftime("%H:%M:%S"),
+                                        event.task.decode('utf-8','replace'),
+                                        event.pid,
+                                        op_type,
+                                        fn_name,
+                                        float(event.latency_us)/1000))
 
     b["events"].open_perf_buffer(print_event_vfs, page_cnt=64)
     start_time = datetime.now()
