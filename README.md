@@ -199,6 +199,8 @@ pair of .c and .py files, and some are directories of files.
 - tools/[ext4dist](tools/ext4dist.py): Summarize ext4 operation latency distribution as a histogram. [Examples](tools/ext4dist_example.txt).
 - tools/[ext4slower](tools/ext4slower.py): Trace slow ext4 operations. [Examples](tools/ext4slower_example.txt).
 - tools/[nfsslower](tools/nfsslower.py): Trace slow NFS operations. [Examples](tools/nfsslower_example.txt).
+- tools/[smbslower](tools/smbslower.py): Trace slow SMB operations. [Examples](tools/smbslower_example.txt).
+- tools/[smbvfsslower](tools/smbvfsslower.py): Trace slow SMB VFS callbacks. [Examples](tools/smbvfsslower_example.txt).
 - tools/[nfsdist](tools/nfsdist.py): Summarize NFS operation latency distribution as a histogram. [Examples](tools/nfsdist_example.txt).
 - tools/[vfscount](tools/vfscount.py): Count VFS calls. [Examples](tools/vfscount_example.txt).
 - tools/[vfsstat](tools/vfsstat.py): Count some VFS calls, with column output. [Examples](tools/vfsstat_example.txt).
