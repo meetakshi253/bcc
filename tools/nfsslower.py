@@ -77,6 +77,9 @@ bpf_text = """
 #define TRACE_OPEN 2
 #define TRACE_GETATTR 3
 #define TRACE_COMMIT 4
+#define TRACE_LOOKUP 5
+#define TRACE_CLOSE 6
+#define TRACE_ACCESS 7
 
 struct val_t {
     u64 ts;
@@ -150,6 +153,26 @@ int trace_file_open_entry (struct pt_regs *ctx, struct inode *inode,
     return 0;
 }
 
+int trace_file_close_entry (struct pt_regs *ctx, struct inode *inode, struct file *filp)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32; // PID is higher part
+    if(FILTER_PID)
+        return 0;
+        
+    // store filep and timestamp by id
+    struct val_t val = {};
+    val.ts = bpf_ktime_get_ns();
+    val.fp = filp;
+    val.d = NULL;
+    val.offset = 0;
+    if (val.fp)
+        entryinfo.update(&id, &val);
+
+    return 0;
+}
+
+
 int trace_getattr_entry(struct pt_regs *ctx, struct vfsmount *mnt,
                         struct dentry *dentry, struct kstat *stat)
 {
@@ -166,6 +189,43 @@ int trace_getattr_entry(struct pt_regs *ctx, struct vfsmount *mnt,
     val.offset = 0;
     if (val.d)
         entryinfo.update(&id, &val);
+
+    return 0;
+}
+
+int trace_lookup_entry(struct pt_regs *ctx, struct inode *dir, struct dentry *dentry, unsigned int flags)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32; // PID is higher part
+    
+    if (FILTER_PID)
+        return 0;
+        
+    // store filep and timestamp by id
+    struct val_t val = {};
+    val.ts = bpf_ktime_get_ns();
+    val.fp = NULL;
+    val.d = dentry;
+    val.offset = 0;
+    if (val.d)
+        entryinfo.update(&id, &val);
+    return 0;
+}
+
+int trace_access_entry(struct pt_regs *ctx, struct inode *inode, int mask)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    u32 pid = id >> 32; // PID is higher part
+
+    if(FILTER_PID)
+        return 0;
+
+    struct val_t val = {};
+    val.ts = bpf_ktime_get_ns();
+    val.fp = NULL;
+    val.d = NULL;
+    val.offset = 0;
+    entryinfo.update(&id, &val);
 
     return 0;
 }
@@ -204,7 +264,15 @@ static int trace_exit(struct pt_regs *ctx, int type)
     // workaround (rewriter should handle file to d_name in one step):
     struct dentry *de = NULL;
     struct qstr qs = {};
-    if(type == TRACE_GETATTR)
+
+    // we should not do the rest of the work for TRACE_ACCESS
+    if (type == TRACE_ACCESS)
+    {
+        events.perf_submit(ctx, &data, sizeof(data));
+        return 0;
+    }
+
+    if(type == TRACE_GETATTR || type == TRACE_LOOKUP)
     {
         bpf_probe_read_kernel(&de,sizeof(de), &valp->d);
     }
@@ -241,6 +309,21 @@ int trace_write_return(struct pt_regs *ctx)
 int trace_getattr_return(struct pt_regs *ctx)
 {
     return trace_exit(ctx, TRACE_GETATTR);
+}
+
+int trace_lookup_return(struct pt_regs *ctx)
+{
+    return trace_exit(ctx, TRACE_LOOKUP);
+}
+
+int trace_file_close_return(struct pt_regs *ctx)
+{
+    return trace_exit(ctx, TRACE_CLOSE);
+}
+
+int trace_access_return(struct pt_regs *ctx)
+{
+    return trace_exit(ctx, TRACE_ACCESS);
 }
 
 static int trace_initiate_commit(struct nfs_commit_data *cd)
@@ -384,22 +467,28 @@ if debug or args.ebpf:
 def print_event(cpu, data, size):
     event = b["events"].event(data)
 
-    type = 'R'
+    type = 'READ'
     if event.type == 1:
-        type = 'W'
+        type = 'WRITE'
     elif event.type == 2:
-        type = 'O'
+        type = 'OPEN'
     elif event.type == 3:
-        type = 'G'
+        type = 'GETATTR'
     elif event.type == 4:
-        type = 'C'
+        type = 'COMMIT'
+    elif event.type == 5:
+        type = "LOOKUP"
+    elif event.type == 6:
+        type = "CLOSE"
+    elif event.type == 7:
+        type = "ACCESS"
 
     if(csv):
         print("%d,%s,%d,%s,%d,%d,%d,%s" % (
             event.ts_us, event.task, event.pid, type, event.size,
             event.offset, event.delta_us, event.file))
         return
-    print("%-8s %-14.14s %-6s %1s %-7s %-8d %7.2f %s" %
+    print("%-8s %-14.14s %-6s %-12s %-7s %-8d %7.2f %s" %
           (strftime("%H:%M:%S"),
            event.task.decode('utf-8', 'replace'),
            event.pid,
@@ -429,11 +518,17 @@ b.attach_kprobe(event="nfs_file_read", fn_name="trace_rw_entry")
 b.attach_kprobe(event="nfs_file_write", fn_name="trace_rw_entry")
 b.attach_kprobe(event="nfs_file_open", fn_name="trace_file_open_entry")
 b.attach_kprobe(event="nfs_getattr", fn_name="trace_getattr_entry")
+b.attach_kprobe(event="nfs_lookup", fn_name="trace_lookup_entry")
+b.attach_kprobe(event="nfs_file_release", fn_name="trace_file_close_entry")
+b.attach_kprobe(event="nfs_permission", fn_name="trace_access_entry")
 
 b.attach_kretprobe(event="nfs_file_read", fn_name="trace_read_return")
 b.attach_kretprobe(event="nfs_file_write", fn_name="trace_write_return")
 b.attach_kretprobe(event="nfs_file_open", fn_name="trace_file_open_return")
 b.attach_kretprobe(event="nfs_getattr", fn_name="trace_getattr_return")
+b.attach_kretprobe(event="nfs_lookup", fn_name="trace_lookup_return")
+b.attach_kretprobe(event="nfs_file_release", fn_name="trace_file_close_return")
+b.attach_kretprobe(event="nfs_permission", fn_name="trace_access_return")
 
 if BPF.get_kprobe_functions(b'nfs4_file_open'):
     b.attach_kprobe(event="nfs4_file_open", fn_name="trace_file_open_entry")
@@ -446,7 +541,7 @@ if not is_support_raw_tp:
                     fn_name="trace_nfs_commit_done")
 
 if(csv):
-    print("ENDTIME_us,TASK,PID,TYPE,BYTES,OFFSET_b,LATENCY_us,FILE")
+    print("ENDTIME_us,TASK,PID,CMD_TYPE,BYTES,OFFSET_b,LATENCY_us,FILE")
 else:
     if min_ms == 0:
         print("Tracing NFS operations... Ctrl-C to quit")
@@ -454,10 +549,10 @@ else:
         print("""Tracing NFS operations that are slower than \
 %d ms... Ctrl-C to quit"""
               % min_ms)
-    print("%-8s %-14s %-6s %1s %-7s %-8s %7s %s" % ("TIME",
+    print("%-8s %-14s %-6s %-12s %-7s %-8s %7s %s" % ("TIME",
                                                     "COMM",
                                                     "PID",
-                                                    "T",
+                                                    "CMD_TYPE",
                                                     "BYTES",
                                                     "OFF_KB",
                                                     "LAT(ms)",
